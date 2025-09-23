@@ -20,13 +20,12 @@ func StartServer() {
 
 	r := gin.Default()
 
-	// ✅ доверяем только localhost, убираем warning
 	r.SetTrustedProxies([]string{"127.0.0.1"})
 
 	// подключаем шаблоны
 	r.SetFuncMap(template.FuncMap{})
 	r.LoadHTMLGlob("templates/*")
-	r.Static("/static", "./resourse")
+	r.Static("/static", "./resources")
 
 	// ==== маршруты ====
 	r.GET("/planets", h.ListPlanets)
@@ -40,6 +39,5 @@ func StartServer() {
 		c.Redirect(http.StatusFound, "/planets")
 	})
 
-	// ✅ меняем порт, чтобы избежать конфликта
 	r.Run(":8080")
 }

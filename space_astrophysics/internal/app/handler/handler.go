@@ -39,7 +39,7 @@ func (h *Handler) ListPlanets(ctx *gin.Context) {
 	}
 
 	ctx.HTML(http.StatusOK, "service_list.html", gin.H{
-		"Planets":   filtered, // ✅ заменили Services → Planets
+		"Planets":   filtered,
 		"CartCount": len(h.Repository.Orders[1].Planets),
 		"OrderID":   1,
 		"Q":         q,
