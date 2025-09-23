@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8" />
+    <title>Space & Astrophysics - Планеты</title>
+    <link rel="stylesheet" href="/static/style/style.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+<div class="frame">
+    <div class="overlap">
+        <img class="background-image" src="/static/img/space-background.svg" alt="Space background" />
+
+        <div class="header-container">
+            <div class="header">
+                <h1 class="main-title">Space & Astrophysics</h1>
+                <p class="subtitle">Расчет положения планет</p>
+            </div>
+            <a href="/world/1" class="order-widget">
+                <span>Заявка:</span>
+                <span>{{.CartCount}}</span>
+            </a>
+        </div>
+
+        <!-- поиск -->
+        <div class="search-section">
+            <form method="get" action="/planets" class="search-container">
+                <input type="text" name="q" class="search-input" placeholder="Введите планету" value="{{.Q}}" />
+            </form>
+        </div>
+
+        <!-- список планет -->
+        <div class="planets-grid">
+            {{range .Planets}}
+            <div class="planet-card">
+                <div class="planet-content">
+                    <img class="planet-image" src="{{.ImageURL}}" alt="{{.Name}}" />
+                    <h3 class="planet-name">{{.Name}}</h3>
+                    <div class="planet-data">
+                        <p class="perihelion">Перигелий: {{printf "%.3f" .Perihelion}} a.e.</p>
+                        <p class="aphelion">Афелий: {{printf "%.3f" .Aphelion}} a.e.</p>
+                    </div>
+                    <a href="/planets/{{.ID}}" class="select-button">Выбор</a>
+                </div>
+            </div>
+            {{else}}
+            <p>Нет доступных планет</p>
+            {{end}}
+        </div>
+    </div>
+</div>
+</body>
+</html>
