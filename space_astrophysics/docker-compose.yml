@@ -1,46 +1,60 @@
-version: "3.9"
-
-x-minio-common: &minio-common
-  image: quay.io/minio/minio:RELEASE.2022-10-15T19-57-03Z
-  command: server --console-address ":9001" http://minio{1...4}/data{1...2}
-  environment:
-    MINIO_ACCESS_KEY: minio
-    MINIO_SECRET_KEY: minio124
-  expose:
-    - "9000"
-    - "9001"
-  healthcheck:
-    test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-    interval: 30s
-    timeout: 20s
-    retries: 3
+version: '3.8'
 
 services:
   # ===== MinIO Cluster =====
   minio1:
-    <<: *minio-common
-    hostname: minio1
+    image: quay.io/minio/minio:RELEASE.2022-10-15T19-57-03Z
+    command: server --console-address ":9001" http://minio{1...4}/data{1...2}
+    environment:
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio124
+    expose:
+      - "9000"
+      - "9001"
     volumes:
       - data1-1:/data1
       - data1-2:/data2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
 
   minio2:
-    <<: *minio-common
-    hostname: minio2
+    image: quay.io/minio/minio:RELEASE.2022-10-15T19-57-03Z
+    command: server --console-address ":9001" http://minio{1...4}/data{1...2}
+    environment:
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio124
+    expose:
+      - "9000"
+      - "9001"
     volumes:
       - data2-1:/data1
       - data2-2:/data2
 
   minio3:
-    <<: *minio-common
-    hostname: minio3
+    image: quay.io/minio/minio:RELEASE.2022-10-15T19-57-03Z
+    command: server --console-address ":9001" http://minio{1...4}/data{1...2}
+    environment:
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio124
+    expose:
+      - "9000"
+      - "9001"
     volumes:
       - data3-1:/data1
       - data3-2:/data2
 
   minio4:
-    <<: *minio-common
-    hostname: minio4
+    image: quay.io/minio/minio:RELEASE.2022-10-15T19-57-03Z
+    command: server --console-address ":9001" http://minio{1...4}/data{1...2}
+    environment:
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio124
+    expose:
+      - "9000"
+      - "9001"
     volumes:
       - data4-1:/data1
       - data4-2:/data2
@@ -60,65 +74,28 @@ services:
       - minio4
 
   # ===== PostgreSQL =====
-  postgres:
-    image: postgres:15.0
-    container_name: astro-postgres
-    command:
-      - "postgres"
-      - "-c"
-      - "max_connections=50"
-      - "-c"
-      - "shared_buffers=1GB"
-      - "-c"
-      - "effective_cache_size=4GB"
-      - "-c"
-      - "work_mem=16MB"
-      - "-c"
-      - "maintenance_work_mem=512MB"
-      - "-c"
-      - "random_page_cost=1.1"
-      - "-c"
-      - "temp_file_limit=10GB"
-      - "-c"
-      - "log_min_duration_statement=200ms"
-      - "-c"
-      - "idle_in_transaction_session_timeout=10s"
-      - "-c"
-      - "lock_timeout=1s"
-      - "-c"
-      - "statement_timeout=60s"
-      - "-c"
-      - "shared_preload_libraries=pg_stat_statements"
-      - "-c"
-      - "pg_stat_statements.max=10000"
-      - "-c"
-      - "pg_stat_statements.track=all"
+  db:
+    image: postgres:15
+    container_name: pg-db
+    restart: always
     environment:
-      POSTGRES_DB: "mydb"
-      POSTGRES_USER: "root"
-      POSTGRES_PASSWORD: "mydbpass"
-      PGDATA: "/var/lib/postgresql/data/pgdata"
-    volumes:
-      - ./InitDatabase:/docker-entrypoint-initdb.d
-      - postgres_data:/var/lib/postgresql/data
+      POSTGRES_DB: astrodb
+      POSTGRES_USER: astrouser
+      POSTGRES_PASSWORD: 1234
     ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U root -d mydb"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    restart: unless-stopped
+      - "5433:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
   # ===== Adminer =====
   adminer:
     image: adminer:latest
-    container_name: adminer
+    container_name: astro-adminer
     ports:
       - "8081:8080"
     depends_on:
-      - postgres
+      - db
     restart: unless-stopped
 
 volumes:
@@ -130,4 +107,4 @@ volumes:
   data3-2:
   data4-1:
   data4-2:
-  postgres_data:
+  db_data:

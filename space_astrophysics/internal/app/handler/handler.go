@@ -7,152 +7,340 @@ import (
 	"strings"
 	"time"
 
+	"space_astrophysics/internal/app/models"
 	"space_astrophysics/internal/app/repository"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 )
 
 type Handler struct {
-	Repository *repository.Repository
+	Repo *repository.Repository
 }
 
 func NewHandler(r *repository.Repository) *Handler {
-	return &Handler{Repository: r}
+	return &Handler{Repo: r}
 }
 
-// ===== 1. СПИСОК ПЛАНЕТ =====
+const currentUserID = 1 // имитация авторизации (создатель)
+
+// =========================================================
+// ВСПОМОГАТЕЛЬНЫЕ
+// =========================================================
+func (h *Handler) getOrCreateDraftWorld(userID int) (*models.World, error) {
+	draft, err := h.Repo.GetDraftWorld(userID)
+	if err != nil {
+		return nil, err
+	}
+	if draft == nil {
+		newWorld := &models.World{
+			CreatorID:   userID,
+			WorldStatus: "draft",
+			CreatedAt:   time.Now(),
+		}
+		if err := h.Repo.CreateWorld(newWorld); err != nil {
+			return nil, err
+		}
+		draft = newWorld
+	}
+	return draft, nil
+}
+
+// =========================================================
+// 🪐 PLANETS (Услуги)
+// =========================================================
+
+// GET /api/planets?q=filter
 func (h *Handler) ListPlanets(ctx *gin.Context) {
 	q := ctx.Query("q")
-	planets := h.Repository.GetAllPlanets()
-
-	// фильтр по имени
-	var filtered []repository.Planet
-	if q == "" {
-		filtered = planets
-	} else {
-		for _, p := range planets {
-			if strings.Contains(strings.ToLower(p.Name), strings.ToLower(q)) {
-				filtered = append(filtered, p)
-			}
-		}
+	planets, err := h.Repo.GetAllPlanets()
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	ctx.HTML(http.StatusOK, "service_list.html", gin.H{
-		"Planets":   filtered, // ✅ заменили Services → Planets
-		"CartCount": len(h.Repository.Orders[1].Planets),
-		"OrderID":   1,
-		"Q":         q,
-	})
+	var filtered []models.Planet
+	for _, p := range planets {
+		if q == "" || strings.Contains(strings.ToLower(p.Name), strings.ToLower(q)) {
+			filtered = append(filtered, p)
+		}
+	}
+	ctx.JSON(http.StatusOK, filtered)
 }
 
-// ===== 2. ДЕТАЛИ ПЛАНЕТЫ =====
+// GET /api/planets/:id
 func (h *Handler) ShowPlanetDetail(ctx *gin.Context) {
-	idStr := ctx.Param("id")
-	id, err := strconv.Atoi(idStr)
+	id, _ := strconv.Atoi(ctx.Param("id"))
+	planet, err := h.Repo.GetPlanetByID(id)
 	if err != nil {
-		logrus.Error(err)
-		ctx.Status(http.StatusBadRequest)
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Планета не найдена"})
 		return
 	}
-
-	planet, err := h.Repository.GetPlanetByID(id)
-	if err != nil {
-		ctx.String(http.StatusNotFound, err.Error())
-		return
-	}
-
-	now := time.Now()
-	r, nu := calcOrbit(planet, now)
-
-	ctx.HTML(http.StatusOK, "service_detail.html", gin.H{
-		"Planet":   planet,
-		"ImageURL": planet.ImageURL,
-		"Date":     now.Format("2006-01-02"),
-		"R_AU":     r,
-		"NuDeg":    nu,
-	})
+	ctx.JSON(http.StatusOK, planet)
 }
 
-// ===== 3. ЗАЯВКА (world) =====
-func (h *Handler) ViewMissionOrder(ctx *gin.Context) {
-	idStr := ctx.Param("id")
-	id, _ := strconv.Atoi(idStr)
-
-	world, err := h.Repository.ViewMissionOrderByID(id)
-	if err != nil {
-		ctx.String(http.StatusNotFound, err.Error())
+// POST /api/planets
+func (h *Handler) CreatePlanet(ctx *gin.Context) {
+	var p models.Planet
+	if err := ctx.ShouldBindJSON(&p); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат"})
 		return
 	}
-
-	// читаем дату из query
-	dateStr := ctx.Query("date")
-	var now time.Time
-	if dateStr != "" {
-		parsed, err := time.Parse("2006-01-02", dateStr)
-		if err == nil {
-			now = parsed
-		} else {
-			now = time.Now()
-		}
-		world.Date = dateStr
-	} else {
-		now = time.Now()
-		world.Date = now.Format("2006-01-02")
-	}
-
-	// считаем угол и расстояние для каждой планеты
-	type Result struct {
-		Planet repository.Planet
-		R_AU   float64
-		NuDeg  float64
-	}
-	var results []Result
-	for _, op := range world.Planets {
-		r, nu := calcOrbit(op.Planet, now)
-		results = append(results, Result{Planet: op.Planet, R_AU: r, NuDeg: nu})
-	}
-
-	ctx.HTML(http.StatusOK, "order_detail.html", gin.H{
-		"Order":   world,
-		"Date":    world.Date,
-		"Results": results,
-	})
-}
-
-// ===== 4. ДОБАВИТЬ В ЗАЯВКУ =====
-func (h *Handler) AddToOrder(ctx *gin.Context) {
-	idStr := ctx.Param("id")
-	id, _ := strconv.Atoi(idStr)
-
-	planet, err := h.Repository.GetPlanetByID(id)
-	if err != nil {
-		ctx.String(http.StatusNotFound, err.Error())
+	p.Status = "active"
+	if err := h.Repo.CreatePlanet(&p); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	world := h.Repository.Orders[1]
-	found := false
-	for _, op := range world.Planets {
-		if op.Planet.ID == planet.ID {
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		world.Planets = append(world.Planets, repository.OrderedPlanet{Planet: planet, Comment: ""})
-	}
-
-	h.Repository.Orders[1] = world
-	ctx.Redirect(http.StatusFound, "/world/1")
+	ctx.JSON(http.StatusCreated, p)
 }
 
-// ====== Расчёт орбиты =====
+// PUT /api/planets/:id
+func (h *Handler) UpdatePlanet(ctx *gin.Context) {
+	id, _ := strconv.Atoi(ctx.Param("id"))
+	var update models.Planet
+	if err := ctx.ShouldBindJSON(&update); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.Repo.UpdatePlanet(id, update); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Планета обновлена"})
+}
+
+// DELETE /api/planets/:id
+func (h *Handler) DeletePlanet(ctx *gin.Context) {
+	id, _ := strconv.Atoi(ctx.Param("id"))
+	if err := h.Repo.DeletePlanet(id); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Планета удалена"})
+}
+
+// POST /api/planets/:id/image
+func (h *Handler) UploadPlanetImage(ctx *gin.Context) {
+	id, _ := strconv.Atoi(ctx.Param("id"))
+	file, err := ctx.FormFile("file")
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Файл не найден"})
+		return
+	}
+	filename, err := h.Repo.UploadPlanetImageToMinio(id, file)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Изображение обновлено", "url": filename})
+}
+
+// POST /api/planets/:id/add-to-world
+func (h *Handler) AddPlanetToWorld(ctx *gin.Context) {
+	planetID, _ := strconv.Atoi(ctx.Param("id"))
+	world, err := h.getOrCreateDraftWorld(currentUserID)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.Repo.AddPlanetToWorld(world.ID, planetID, 1, false); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Планета добавлена в черновик"})
+}
+
+// =========================================================
+// 🌍 WORLDS (Заявки)
+// =========================================================
+
+// GET /api/cart
+func (h *Handler) GetCartIcon(ctx *gin.Context) {
+	world, err := h.Repo.GetDraftWorld(currentUserID)
+	if err != nil || world == nil {
+		ctx.JSON(http.StatusOK, gin.H{"world_id": nil, "count": 0})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"world_id": world.ID, "count": len(world.Planets)})
+}
+
+// GET /api/worlds?status=&from=&to=
+func (h *Handler) ListWorldsFiltered(ctx *gin.Context) {
+	status := ctx.Query("status")
+	from := ctx.Query("from")
+	to := ctx.Query("to")
+	worlds, err := h.Repo.GetWorldsFiltered(status, from, to)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, worlds)
+}
+
+// GET /api/worlds/:id
+func (h *Handler) ViewWorld(ctx *gin.Context) {
+	id, _ := strconv.Atoi(ctx.Param("id"))
+	world, err := h.Repo.GetWorldByID(id)
+	if err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Заявка не найдена"})
+		return
+	}
+	ctx.JSON(http.StatusOK, world)
+}
+
+// PUT /api/worlds/:id
+func (h *Handler) UpdateWorld(ctx *gin.Context) {
+	id, _ := strconv.Atoi(ctx.Param("id"))
+	var update map[string]interface{}
+	if err := ctx.ShouldBindJSON(&update); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	delete(update, "id")
+	delete(update, "creator_id")
+	delete(update, "world_status")
+	if err := h.Repo.UpdateWorldFields(id, update); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Заявка обновлена"})
+}
+
+// PUT /api/worlds/:id/form
+func (h *Handler) FormWorld(ctx *gin.Context) {
+	id, _ := strconv.Atoi(ctx.Param("id"))
+	if err := h.Repo.FormWorld(id); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Заявка оформлена"})
+}
+
+// PUT /api/worlds/:id/complete
+func (h *Handler) CompleteWorld(ctx *gin.Context) {
+	id, _ := strconv.Atoi(ctx.Param("id"))
+	if err := h.Repo.CompleteWorld(id, 2); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Заявка завершена"})
+}
+
+// DELETE /api/worlds/:id
+func (h *Handler) DeleteWorld(ctx *gin.Context) {
+	id, _ := strconv.Atoi(ctx.Param("id"))
+	if err := h.Repo.DeleteWorldSQL(id); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Заявка удалена"})
+}
+
+// =========================================================
+// ⚙️ M-M связи (WorldPlanet)
+// =========================================================
+
+// DELETE /api/worlds/:world_id/planet/:planet_id
+func (h *Handler) DeleteWorldPlanet(ctx *gin.Context) {
+	worldID, _ := strconv.Atoi(ctx.Param("world_id"))
+	planetID, _ := strconv.Atoi(ctx.Param("planet_id"))
+	if err := h.Repo.DeleteWorldPlanet(worldID, planetID); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Планета удалена из заявки"})
+}
+
+// PUT /api/worlds/:world_id/planet/:planet_id
+func (h *Handler) UpdateWorldPlanet(ctx *gin.Context) {
+	worldID, _ := strconv.Atoi(ctx.Param("world_id"))
+	planetID, _ := strconv.Atoi(ctx.Param("planet_id"))
+	var payload struct {
+		Quantity int  `json:"quantity"`
+		IsMain   bool `json:"is_main"`
+	}
+	if err := ctx.ShouldBindJSON(&payload); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный JSON"})
+		return
+	}
+	if err := h.Repo.UpdateWorldPlanet(worldID, planetID, payload.Quantity, payload.IsMain); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Связь обновлена"})
+}
+
+// =========================================================
+// 👤 USERS
+// =========================================================
+
+// POST /api/users/register
+func (h *Handler) RegisterUser(ctx *gin.Context) {
+	var u models.User
+	if err := ctx.ShouldBindJSON(&u); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.Repo.CreateUser(&u); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusCreated, u)
+}
+
+// GET /api/users/me
+func (h *Handler) GetUserProfile(ctx *gin.Context) {
+	user, err := h.Repo.GetUserByID(currentUserID)
+	if err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Пользователь не найден"})
+		return
+	}
+	ctx.JSON(http.StatusOK, user)
+}
+
+// PUT /api/users/me
+func (h *Handler) UpdateUserProfile(ctx *gin.Context) {
+	var update models.User
+	if err := ctx.ShouldBindJSON(&update); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.Repo.UpdateUser(currentUserID, update); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Профиль обновлен"})
+}
+
+// POST /api/users/login
+func (h *Handler) Login(ctx *gin.Context) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	user, err := h.Repo.Authenticate(req.Username, req.Password)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Неверные данные"})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "Успешный вход", "user": user})
+}
+
+// POST /api/users/logout
+func (h *Handler) Logout(ctx *gin.Context) {
+	ctx.JSON(http.StatusOK, gin.H{"message": "Пользователь вышел"})
+}
+
+// =========================================================
+// Утилиты: расчёт орбиты
+// =========================================================
 func julianDate(t time.Time) float64 {
 	year, month, day := t.Date()
 	if month <= 2 {
-		year -= 1
+		year--
 		month += 12
 	}
 	A := year / 100
@@ -170,11 +358,10 @@ func solveKepler(M, e float64) float64 {
 	return E
 }
 
-func calcOrbit(p repository.Planet, t time.Time) (float64, float64) {
+func calcOrbit(p models.Planet, t time.Time) (float64, float64) {
 	jd := julianDate(t)
 	M := 2 * math.Pi * (jd - p.T0) / (p.Period * 365.25)
 	M = math.Mod(M, 2*math.Pi)
-
 	E := solveKepler(M, p.E)
 	nu := 2 * math.Atan2(
 		math.Sqrt(1+p.E)*math.Sin(E/2),

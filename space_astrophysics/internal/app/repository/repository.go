@@ -1,79 +1,268 @@
 package repository
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"mime/multipart"
+	"path/filepath"
+	"strings"
+	"time"
 
-type Planet struct {
-	ID          int
-	Name        string
-	Perihelion  float64
-	Aphelion    float64
-	Description string
-	ImageURL    string
+	"space_astrophysics/internal/app/models"
 
-	A      float64 // большая полуось (a.e.)
-	E      float64 // эксцентриситет
-	Period float64 // период (лет)
-	T0     float64 // эпоха перигелия (JD)
-}
-
-type OrderedPlanet struct {
-	Planet  Planet
-	Comment string // комментарий пользователя
-}
-
-type Order struct {
-	ID      int
-	Planets []OrderedPlanet
-	Date    string // дата заявки одна для всех
-}
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+	"gorm.io/gorm"
+)
 
 type Repository struct {
-	Planets []Planet
-	Orders  map[int]Order
+	DB     *gorm.DB
+	Minio  *minio.Client
+	Bucket string
 }
 
-func NewRepository() (*Repository, error) {
-	planets := []Planet{
-		{1, "Меркурий", 0.307, 0.467, "Ближайшая к Солнцу планета. Температура достигает 430°C днем и -180°C ночью. Не имеет атмосферы и спутников.",
-			"http://localhost:9000/planets/mercury.png", 0.387, 0.206, 0.241, 2451547.5},
-		{2, "Венера", 0.718, 0.728, "Вторая планета от Солнца. Имеет плотную атмосферу из углекислого газа с давлением в 92 раза больше земного. Температура поверхности около 465°C.",
-			"http://localhost:9000/planets/venus.png", 0.723, 0.007, 0.615, 2451547.5},
-		{3, "Земля", 0.983, 1.017, "Третья планета от Солнца. Единственная известная планета с жизнью. Имеет один естественный спутник - Луну.",
-			"http://localhost:9000/planets/earth.png", 1.000, 0.017, 1.000, 2451547.5},
-		{4, "Марс", 1.381, 1.666, "Четвертая планета, известная как 'Красная планета'. Имеет два спутника - Фобос и Деймос. Температура от -153°C до +20°C.",
-			"http://localhost:9000/planets/mars.png", 1.524, 0.093, 1.881, 2451547.5},
-		{5, "Юпитер", 4.950, 5.458, "Крупнейшая планета Солнечной системы, газовый гигант. Имеет 79 известных спутников, включая Ганимед - крупнейший спутник в Солнечной системе.",
-			"http://localhost:9000/planets/jupiter.png", 5.203, 0.049, 11.86, 2451547.5},
-		{6, "Сатурн", 9.041, 10.124, "Вторая по величине планета, известная своими кольцами. Имеет 82 спутника. Температура в верхних слоях атмосферы около -178°C.",
-			"http://localhost:9000/planets/saturn.png", 9.537, 0.056, 29.46, 2451547.5},
-		{7, "Уран", 18.286, 20.096, "Ледяной гигант с уникальным наклоном оси вращения (98°). Имеет 27 спутников и слабую систему колец. Температура около -224°C.",
-			"http://localhost:9000/planets/uranus.png", 19.191, 0.046, 84.01, 2451547.5},
-		{8, "Нептун", 29.81, 30.33, "Самая дальняя планета Солнечной системы, ледяной гигант. Имеет 14 спутников и самые сильные ветры в Солнечной системе - до 2100 км/ч.",
-			"http://localhost:9000/planets/neptune.png", 30.07, 0.010, 164.8, 2451547.5},
+// Инициализация репозитория
+func NewRepository(db *gorm.DB) *Repository {
+	return &Repository{DB: db}
+}
+
+// Если используешь MinIO:
+func (r *Repository) InitMinio(endpoint, accessKey, secretKey, bucket string, useSSL bool) error {
+	minioClient, err := minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
+		Secure: useSSL,
+	})
+	if err != nil {
+		return err
 	}
+	r.Minio = minioClient
+	r.Bucket = bucket
 
-	worlds := make(map[int]Order)
-	worlds[1] = Order{ID: 1, Planets: []OrderedPlanet{}, Date: ""}
-
-	return &Repository{Planets: planets, Orders: worlds}, nil
-}
-
-func (r *Repository) GetAllPlanets() []Planet {
-	return r.Planets
-}
-
-func (r *Repository) GetPlanetByID(id int) (Planet, error) {
-	for _, p := range r.Planets {
-		if p.ID == id {
-			return p, nil
+	// Создание бакета при необходимости
+	exists, errBucketExists := minioClient.BucketExists(nil, bucket)
+	if errBucketExists != nil {
+		return errBucketExists
+	}
+	if !exists {
+		if err := minioClient.MakeBucket(nil, bucket, minio.MakeBucketOptions{}); err != nil {
+			return err
 		}
 	}
-	return Planet{}, fmt.Errorf("планета с id=%d не найдена", id)
+	return nil
 }
 
-func (r *Repository) ViewMissionOrderByID(id int) (Order, error) {
-	if world, ok := r.Orders[id]; ok {
-		return world, nil
+//
+// =====================================================
+// PLANETS
+// =====================================================
+//
+
+// Получить все планеты
+func (r *Repository) GetAllPlanets() ([]models.Planet, error) {
+	var planets []models.Planet
+	if err := r.DB.Find(&planets).Error; err != nil {
+		return nil, err
 	}
-	return Order{}, fmt.Errorf("заявка с id=%d не найдена", id)
+	return planets, nil
+}
+
+// Получить планету по ID
+func (r *Repository) GetPlanetByID(id int) (models.Planet, error) {
+	var planet models.Planet
+	if err := r.DB.First(&planet, id).Error; err != nil {
+		return models.Planet{}, err
+	}
+	return planet, nil
+}
+
+// Создать новую планету
+func (r *Repository) CreatePlanet(p *models.Planet) error {
+	return r.DB.Create(p).Error
+}
+
+// Обновить планету
+func (r *Repository) UpdatePlanet(id int, update models.Planet) error {
+	return r.DB.Model(&models.Planet{}).Where("id = ?", id).Updates(update).Error
+}
+
+// Удалить планету
+func (r *Repository) DeletePlanet(id int) error {
+	return r.DB.Delete(&models.Planet{}, id).Error
+}
+
+// Загрузить изображение планеты в MinIO
+func (r *Repository) UploadPlanetImageToMinio(planetID int, file *multipart.FileHeader) (string, error) {
+	if r.Minio == nil {
+		return "", errors.New("MinIO не инициализирован")
+	}
+	src, err := file.Open()
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+
+	objectName := fmt.Sprintf("planet_%d%s", planetID, filepath.Ext(file.Filename))
+	_, err = r.Minio.PutObject(
+		nil,
+		r.Bucket,
+		objectName,
+		src,
+		file.Size,
+		minio.PutObjectOptions{ContentType: file.Header.Get("Content-Type")},
+	)
+	if err != nil {
+		return "", err
+	}
+
+	url := fmt.Sprintf("https://%s/%s/%s", r.Minio.EndpointURL().Host, r.Bucket, objectName)
+	// обновим поле image_url
+	r.DB.Model(&models.Planet{}).Where("id = ?", planetID).Update("image_url", url)
+	return url, nil
+}
+
+//
+// =====================================================
+// WORLDS
+// =====================================================
+//
+
+func (r *Repository) GetDraftWorld(userID int) (*models.World, error) {
+	var world models.World
+	err := r.DB.Preload("Planets.Planet").
+		Where("creator_id = ? AND world_status = ?", userID, "draft").
+		First(&world).Error
+
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &world, nil
+}
+
+func (r *Repository) GetWorldByID(id int) (models.World, error) {
+	var world models.World
+	if err := r.DB.Preload("Planets.Planet").First(&world, id).Error; err != nil {
+		return models.World{}, err
+	}
+	return world, nil
+}
+
+func (r *Repository) CreateWorld(world *models.World) error {
+	return r.DB.Create(world).Error
+}
+
+func (r *Repository) AddPlanetToWorld(worldID, planetID, quantity int, isMain bool) error {
+	var existing models.WorldPlanet
+	err := r.DB.First(&existing, "world_id = ? AND planet_id = ?", worldID, planetID).Error
+	if err == nil {
+		return errors.New("планета уже добавлена в заявку")
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	wp := models.WorldPlanet{
+		WorldID:  worldID,
+		PlanetID: planetID,
+		Quantity: quantity,
+		IsMain:   isMain,
+	}
+	return r.DB.Create(&wp).Error
+}
+
+func (r *Repository) DeleteWorldSQL(worldID int) error {
+	return r.DB.Exec("UPDATE worlds SET world_status='deleted' WHERE id = ?", worldID).Error
+}
+
+func (r *Repository) UpdateWorldFields(id int, update map[string]interface{}) error {
+	return r.DB.Model(&models.World{}).Where("id = ?", id).Updates(update).Error
+}
+
+func (r *Repository) GetWorldsFiltered(status, from, to string) ([]models.World, error) {
+	query := r.DB.Preload("Planets.Planet")
+	if status != "" {
+		query = query.Where("world_status = ?", status)
+	}
+	if from != "" {
+		query = query.Where("created_at >= ?", from)
+	}
+	if to != "" {
+		query = query.Where("created_at <= ?", to)
+	}
+	var worlds []models.World
+	if err := query.Find(&worlds).Error; err != nil {
+		return nil, err
+	}
+	return worlds, nil
+}
+
+func (r *Repository) FormWorld(id int) error {
+	return r.DB.Model(&models.World{}).
+		Where("id = ?", id).
+		Update("world_status", "formed").Error
+}
+
+func (r *Repository) CompleteWorld(id int, totalCost float64) error {
+	return r.DB.Model(&models.World{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"world_status": "completed",
+			"total_cost":   totalCost,
+			"completed_at": time.Now(),
+		}).Error
+}
+
+//
+// =====================================================
+// WORLD-PLANET связи
+// =====================================================
+//
+
+func (r *Repository) DeleteWorldPlanet(worldID, planetID int) error {
+	return r.DB.Where("world_id = ? AND planet_id = ?", worldID, planetID).
+		Delete(&models.WorldPlanet{}).Error
+}
+
+func (r *Repository) UpdateWorldPlanet(worldID, planetID, quantity int, isMain bool) error {
+	return r.DB.Model(&models.WorldPlanet{}).
+		Where("world_id = ? AND planet_id = ?", worldID, planetID).
+		Updates(map[string]interface{}{
+			"quantity": quantity,
+			"is_main":  isMain,
+		}).Error
+}
+
+//
+// =====================================================
+// USERS
+// =====================================================
+//
+
+func (r *Repository) CreateUser(u *models.User) error {
+	return r.DB.Create(u).Error
+}
+
+func (r *Repository) GetUserByID(id int) (models.User, error) {
+	var user models.User
+	if err := r.DB.First(&user, id).Error; err != nil {
+		return models.User{}, err
+	}
+	return user, nil
+}
+
+func (r *Repository) UpdateUser(id int, update models.User) error {
+	return r.DB.Model(&models.User{}).Where("id = ?", id).Updates(update).Error
+}
+
+func (r *Repository) Authenticate(username, password string) (models.User, error) {
+	var user models.User
+	if err := r.DB.Where("username = ?", username).First(&user).Error; err != nil {
+		return models.User{}, err
+	}
+	if strings.TrimSpace(user.Password) != strings.TrimSpace(password) {
+		return models.User{}, errors.New("неверный пароль")
+	}
+	return user, nil
 }
